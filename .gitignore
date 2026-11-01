@@ -1,0 +1,28 @@
+# 编译产物
+*.exe
+*.pdb
+*.obj
+bin/
+obj/
+Build/
+
+# 调试与临时文件
+*.log
+*.etl
+*.pcap
+*.txt.tmp
+relay.log
+
+# 本地工具
+_*.cs
+_t*.exe
+setup_dbg.exe
+
+# 资源（来自 TAP-Windows 项目，按许可单独分发）
+*.sys
+*.cat
+*.inf
+
+# 编辑器
+.vs/
+.vscode/
