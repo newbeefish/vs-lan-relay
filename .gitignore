@@ -26,3 +26,5 @@ setup_dbg.exe
 # 编辑器
 .vs/
 .vscode/
+# 发布产物例外
+!dist/*.exe
