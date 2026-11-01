@@ -50,8 +50,31 @@ public class MainForm : Form
     static DateTime pingSentAt;
     static string testStep = "";
     static string peerTapIp = null;
+    static int dataSeqI = 0;
+    static ushort NextSeq() { return (ushort)System.Threading.Interlocked.Increment(ref dataSeqI); }
+    static readonly object dupLock = new object();
+    static readonly System.Collections.Generic.Queue<ushort> dupOrder = new System.Collections.Generic.Queue<ushort>();
+    static readonly System.Collections.Generic.HashSet<ushort> dupSet = new System.Collections.Generic.HashSet<ushort>();
+
+    // 判断是否为重复包（窗口 1024）
+    static bool IsDup(ushort seq)
+    {
+        lock (dupLock)
+        {
+            if (dupSet.Contains(seq)) return true;
+            dupSet.Add(seq);
+            dupOrder.Enqueue(seq);
+            while (dupOrder.Count > 1024)
+            {
+                ushort old = dupOrder.Dequeue();
+                dupSet.Remove(old);
+            }
+            return false;
+        }
+    }
     static DateTime kaSendAt = DateTime.MinValue;
     static int lastRtt = -1;
+    static long dupDropped = 0;
     IPEndPoint peerTunnel = null;
     string myTunnelIp = null;
     string myTapIp = null;
@@ -736,7 +759,7 @@ public class MainForm : Form
             {
                 statsTick += 2;
                 if (statsTick % 10 == 0)
-                    Log("[统计] 转发=" + sent + " 接收=" + recv + " 收包=" + netDiag + " 延迟=" + lastRtt + "ms 对端=" + (peerTunnel != null ? peerTunnel.ToString() : "无"));
+                    Log("[统计] 转发=" + sent + " 接收=" + recv + " 收包=" + netDiag + " 延迟=" + lastRtt + "ms 去重=" + dupDropped + " 对端=" + (peerTunnel != null ? peerTunnel.ToString() : "无"));
             }
             catch { }
         }
@@ -780,13 +803,17 @@ public class MainForm : Form
             if (peerTapIp != null && src.ToString() == peerTapIp) continue;   // 忽略我们自己伪造注入的包
             if (peerTunnel == null || sendUdp == null || myTapIp == null) continue;
 
-            byte[] env = new byte[9 + plen];
+            ushort sq = NextSeq();
+            byte[] env = new byte[11 + plen];
             env[0] = 1;
+            env[1] = (byte)(sq >> 8); env[2] = (byte)sq;
             byte[] vip = IPAddress.Parse(myTapIp).GetAddressBytes();
-            Array.Copy(vip, 0, env, 1, 4);
-            env[5] = (byte)(sp >> 8); env[6] = (byte)sp;
-            env[7] = (byte)(dp >> 8); env[8] = (byte)dp;
-            Array.Copy(buf, off, env, 9, plen);
+            Array.Copy(vip, 0, env, 3, 4);
+            env[7] = (byte)(sp >> 8); env[8] = (byte)sp;
+            env[9] = (byte)(dp >> 8); env[10] = (byte)dp;
+            Array.Copy(buf, off, env, 11, plen);
+            // 丢包补偿：同一帧连发两次，接收端按序号去重
+            try { sendUdp.Send(env, env.Length, peerTunnel); sent++; } catch { }
             try { sendUdp.Send(env, env.Length, peerTunnel); sent++; } catch { }
             Thread.Sleep(1);
         }
@@ -987,14 +1014,17 @@ public class MainForm : Form
                 byte[] d = uc.Receive(ref ep);
                 if (d == null || d.Length == 0) continue;
                 if (peerTunnel == null || sendUdp == null) continue;
-                byte[] env = new byte[9 + d.Length];
+                ushort sq2 = NextSeq();
+                byte[] env = new byte[11 + d.Length];
                 env[0] = 7;
+                env[1] = (byte)(sq2 >> 8); env[2] = (byte)sq2;
                 byte[] ipb = ep.Address.GetAddressBytes();
                 if (ipb.Length != 4) continue;
-                Array.Copy(ipb, 0, env, 1, 4);
-                env[5] = (byte)(ep.Port >> 8); env[6] = (byte)ep.Port;
-                env[7] = (byte)(localPort >> 8); env[8] = (byte)localPort;
-                Array.Copy(d, 0, env, 9, d.Length);
+                Array.Copy(ipb, 0, env, 3, 4);
+                env[7] = (byte)(ep.Port >> 8); env[8] = (byte)ep.Port;
+                env[9] = (byte)(localPort >> 8); env[10] = (byte)localPort;
+                Array.Copy(d, 0, env, 11, d.Length);
+                sendUdp.Send(env, env.Length, peerTunnel);
                 sendUdp.Send(env, env.Length, peerTunnel);
                 sent++;
                 Log("[回程] " + ep.Address + ":" + ep.Port + " -> " + localPort + "  " + d.Length + "B，已转发给对端");
@@ -1093,13 +1123,15 @@ public class MainForm : Form
                     TcpProxy.Handle(d[0], tid, tdata);
                     continue;
                 }
-                if (rawMode && d.Length >= 9 && (d[0] == 1 || d[0] == 7))
+                if (rawMode && d.Length >= 11 && (d[0] == 1 || d[0] == 7))
                 {
-                    IPAddress vsrc = new IPAddress(new byte[] { d[1], d[2], d[3], d[4] });
-                    int esp = (d[5] << 8) | d[6];
-                    int edp = (d[7] << 8) | d[8];
-                    byte[] payload = new byte[d.Length - 9];
-                    Array.Copy(d, 9, payload, 0, payload.Length);
+                    ushort seq = (ushort)((d[1] << 8) | d[2]);
+                    if (IsDup(seq)) { dupDropped++; continue; }   // 重复包，丢弃
+                    IPAddress vsrc = new IPAddress(new byte[] { d[3], d[4], d[5], d[6] });
+                    int esp = (d[7] << 8) | d[8];
+                    int edp = (d[9] << 8) | d[10];
+                    byte[] payload = new byte[d.Length - 11];
+                    Array.Copy(d, 11, payload, 0, payload.Length);
                     InjectLocal(vsrc, esp, edp, payload);
                     recv++;
                     continue;
