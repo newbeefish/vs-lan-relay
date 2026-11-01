@@ -83,4 +83,10 @@ csc.exe /target:winexe /platform:anycpu ^
 
 ## 许可
 
-仅供学习研究，请支持游戏原作者。
+**All Rights Reserved（保留所有权利）** — 详见 [LICENSE.txt](LICENSE.txt)。
+
+本软件**不是**开源软件。仅授权个人非商业使用，禁止复制、修改、分发、商用。
+
+第三方组件（TAP-Windows 驱动）遵循其原有 GPLv2 许可。
+
+请支持游戏原作者。
