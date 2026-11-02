@@ -20,8 +20,10 @@ closesocket(S2)                               ← 立刻关闭
 而对方主机把回复发到 **这个临时 socket 的端口**，此时它早已关闭。游戏真正监听的
 `0.0.0.0:17478` 永远收不到回复，所以房间列表永远是空的。
 
-（AIR 50.2.3.3 用的是应用自己绑定的 socket，所以旧版本能正常工作。相关 bug 报告：
-[airsdk/Adobe-Runtime-Support#4375](https://github.com/airsdk/Adobe-Runtime-Support/issues/4375)）
+（AIR 50.2.3.3 用的是应用自己绑定的 socket，所以旧版本能正常工作。）
+
+这个 bug 由社区开发者 [@diazynez](https://github.com/diazynez) 定位并提交：
+[airsdk/Adobe-Runtime-Support#4375](https://github.com/airsdk/Adobe-Runtime-Support/issues/4375)
 
 此外游戏的 `sendBroadcast()` 取的是**最后一个网卡**的广播地址，在多网卡机器上经常拿到
 `169.254.x.255`（链路本地），查询发到了根本不存在的网段。
@@ -148,4 +150,6 @@ C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /target:exe /out:LANDisc
 
 ## 许可
 
-All Rights Reserved
+本项目采用 [GNU General Public License v3.0](LICENSE) 许可协议。
+
+你可以自由使用、修改、分发本项目，但衍生作品必须以相同协议开源。
