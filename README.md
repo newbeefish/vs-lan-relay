@@ -1,101 +1,151 @@
-# 死神VS火影 局域网联机助手（VsRelay）
+# 死神VS火影 局域网联机助手
 
-> 把 Radmin VPN（或任何 /8 网段的虚拟局域网）的隧道，变成这款游戏能识别的 **/24 局域网**，
-> 从而恢复《死神VS火影 竞技版》的局域网联机功能。
+> 让《死神VS火影 竞技版》通过 Radmin VPN 正常联机。
+
+---
 
 ## 为什么需要它
 
-《BLEACH VS NARUTO 竞技版》的局域网联机有两个硬性限制：
+这个游戏（3.8.8.6）自带的局域网搜索**根本搜不到房间**，原因在 Adobe AIR 运行时：
 
-1. **只接受 `/24` 掩码的网卡**。Radmin VPN 分配的是 `26.0.0.0/8`，游戏永远选不中它。
-2. **启动时一次性枚举网卡**。游戏启动之后再加网卡无效。
-
-于是出现"双方都在同一个 Radmin 网络里、能 ping 通，但游戏搜不到房间"的经典困境。
-
-## 思路
+**AIR 51 的 `DatagramSocket.send()` 在发送子网广播时会临时创建一个 socket，发完立刻关闭：**
 
 ```
-游戏 ──UDP 17477/17478──┐
-                        ├─ 原始套接字抓包（所有网卡）
-                        │
-                        ├─ 隧道（Radmin VPN，UDP 50001）
-                        │
-游戏 ──TCP 17511────────┘
-                        │
-                        └─ 注入对端本机（辅助 IP + 普通 socket / TCP 代理）
+socket(S2)                                    ← 临时 socket
+setsockopt(S2, SO_BROADCAST, 1)
+sendto(S2, 21字节, 169.254.255.255:17477)
+closesocket(S2)                               ← 立刻关闭
 ```
 
-**关键点：不依赖虚拟网卡承载游戏流量。** 用 Windows 原始套接字在链路层直接抓取游戏广播，
-通过隧道转发到对端，再以"对端的虚拟 IP"为源地址注入回本机协议栈。
+而对方主机把回复发到 **这个临时 socket 的端口**，此时它早已关闭。游戏真正监听的
+`0.0.0.0:17478` 永远收不到回复，所以房间列表永远是空的。
 
-## 四个必须踩过的坑
+（AIR 50.2.3.3 用的是应用自己绑定的 socket，所以旧版本能正常工作。相关 bug 报告：
+[airsdk/Adobe-Runtime-Support#4375](https://github.com/airsdk/Adobe-Runtime-Support/issues/4375)）
 
-| 坑 | 现象 | 解法 |
-|---|---|---|
-| 发现包无限对回 | 每秒几百个包，CPU 打满 | 协议加 `H`/`R` 类型，只对探测包回一次 |
-| 重叠 I/O 缓冲区未固定 | `clr.dll` 崩溃 `0xc0000005` | 改回同步 I/O |
-| 同步读取时 `CloseHandle` | 点"停止转发"界面假死 | 读取线程常驻，不再关闭句柄 |
-| **对称端口被丢弃** | 发送方计数在涨，接收方永远是 0 | 发送改用独立 socket，源端口随机 |
-| **把自己当成对端** | 数据全发给自己 | 比对**全部**本机网卡地址，而不是只比一个 |
+此外游戏的 `sendBroadcast()` 取的是**最后一个网卡**的广播地址，在多网卡机器上经常拿到
+`169.254.x.255`（链路本地），查询发到了根本不存在的网段。
 
-## 四步自检
+---
 
-程序内置分步诊断，每步独立着色：
+## 它是怎么解决的
 
-```
-① 抓包引擎：原始套接字能否打开全部网卡
-② 本机注入：能否把包送进本机 socket（源 IP 正确）
-③ 游戏联通：游戏进程 + 17477/17478 端口状态
-④ 对端回环：向对端发 PING，等待 PONG，显示实测延迟
+游戏源码里留了一个外部搜索组件的接口：
+
+```actionscript
+var executable:File = applicationDirectory.resolvePath("assets/bridge/LANDiscovery.exe");
+if (!NativeProcess.isSupported || !executable.exists) { 走内置广播; return; }
 ```
 
-## 构建
+**只要这个文件存在，游戏就把搜索交给它**，通过标准输入输出通信：
 
-需要 .NET Framework 4.0 的 `csc.exe`（Windows 自带）：
-
-```bat
-csc.exe /target:winexe /platform:anycpu ^
-  /win32icon:app.ico /win32manifest:app.manifest ^
-  /r:System.Windows.Forms.dll /r:System.Drawing.dll ^
-  /resource:OemVista.inf,res.OemVista.inf ^
-  /resource:tap0901.sys,res.tap0901.sys ^
-  /resource:tap0901.cat,res.tap0901.cat ^
-  Program.cs TapInstaller.cs RawNet.cs TcpProxy.cs
+```
+游戏 → 程序:  SEARCH\t<地址>\t<十六进制查询包>
+程序 → 游戏:  READY
+              HOST\t<IP>\t<端口>\t<十六进制房间包>
 ```
 
-安装包（`Setup.cs`）把主程序作为嵌入资源打包，负责释放文件、建快捷方式。
+而且游戏**完全信任程序给出的 IP**：
 
-## 文件说明
+```actionscript
+_loc3_.ip = param1.fromIP;
+_loc3_.tcpPort = 17511;
+_socket.connect(param3.ip, 17511);
+```
 
-| 文件 | 作用 |
-|---|---|
-| `Program.cs` | 主窗口、发现协议、隧道转发、四步自检 |
-| `RawNet.cs` | 原始套接字抓包（`SIO_RCVALL`）与 IP/UDP 包构造 |
-| `TcpProxy.cs` | TCP 17511 代理（加入对局用） |
-| `TapInstaller.cs` | TAP-Windows 网卡的 SetupAPI 自动安装 |
-| `Setup.cs` | 单文件安装程序 |
+于是方案变成：
+
+```
+游戏 ──(标准输入输出)── 补丁 ──(本机 UDP)── 主程序 ──(Radmin 隧道)── 对方主程序
+                                                                          │
+                                                                       对方补丁
+                                                                          │
+                                                                       对方游戏
+```
+
+**完全绕开广播**：查询走单播到对方的 Radmin IP，房间包直接塞回游戏的列表接口。
+
+找到房间后，游戏会用**对方的真实 Radmin IP** 建立 TCP 连接——**对局数据走 Radmin 原生
+通道**（有重传、有序），不经过本程序。
+
+---
+
+## 组件
+
+| 文件 | 大小 | 位置 | 作用 |
+|---|---|---|---|
+| `VsRelayUI.exe` | 54 KB | `C:\VsGameRelay\` | 主程序：隧道、握手、延迟显示 |
+| `LANDiscovery.exe` | 10 KB | 游戏目录 `\assets\bridge\` | 补丁：只和游戏换包 |
+| `安装联机助手.exe` | 109 KB | 桌面 | 一键安装器 |
+
+### 主程序
+
+- 在 Radmin 网段广播握手包，**自动找到对端并锁定**（无需手填 IP）
+- 隧道心跳，实时显示延迟
+- 点 ✕ 收进托盘；游戏退出后自动退出
+- 每次「开始运行」重新握手，不会锁在旧地址
+
+### 补丁
+
+- 游戏启动搜索时被拉起
+- 把查询转给主程序，把房间包交回游戏
+- 游戏退出自动结束（看门狗）
+- 自动清理同名的旧实例，避免端口占用
+
+---
+
+## 安装
+
+1. 双击 `安装联机助手.exe`
+2. 它会自动找到游戏目录（也可手动选）
+3. 点「一键安装」
+
+安装内容：
+
+```
+C:\VsGameRelay\VsRelayUI.exe                      主程序
+<游戏目录>\assets\bridge\LANDiscovery.exe          补丁
+桌面快捷方式
+```
+
+**不需要**：管理员权限、内核驱动、虚拟网卡、修改系统设置。
+**卸载**：删掉这两个文件即可。
+
+---
+
+## 使用
+
+1. 两台电脑都装，都登录 Radmin VPN 并加入同一网络
+2. 各自打开「死神VS火影联机助手」，点「开始运行」
+3. 等界面显示 `隧道对端：26.x.x.x（已握手锁定）` 和延迟数字
+4. 一台创建房间，另一台进「加入游戏」
+
+---
 
 ## 已知限制
 
-- 游戏自身的局域网同步有缺陷（**真实局域网也会出现角色闪现**），与本工具无关。
-- 需要管理员权限（原始套接字 + 安装网卡）。
-- 仅支持 IPv4。
+- 只能在**同一 Radmin 网络**内的两台机器间使用
+- 延迟取决于 Radmin 线路质量
+- 需要 Adobe AIR 支持 `NativeProcess`（桌面版均支持）
+
+---
+
+## 源码
+
+`src2/` 目录包含三个组件的完整 C# 源码：
+
+- `VsRelayUI.cs` — 主程序（隧道 / 握手 / 界面）
+- `LANDiscovery_Patch.cs` — 游戏补丁
+- `Setup.cs` — 安装器
+
+编译（无需 Visual Studio，用系统自带的 csc）：
+
+```bat
+C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /target:exe /out:LANDiscovery.exe LANDiscovery_Patch.cs
+```
+
+---
 
 ## 许可
 
-**All Rights Reserved（保留所有权利）** — 详见 [LICENSE.txt](LICENSE.txt)。
-
-本软件**不是**开源软件。仅授权个人非商业使用，禁止复制、修改、分发、商用。
-
-第三方组件（TAP-Windows 驱动）遵循其原有 GPLv2 许可。
-
-请支持游戏原作者。
-## 更新日志
-
-### v1.0.1
-- **丢包补偿**：每个数据帧连发两次，接收端按序号去重，零额外延迟地对抗丢包
-- 统计面板显示去重数量，可直接观察丢包情况
-
-### v1.0.0
-- 首个可用版本：原始套接字抓包 + Radmin 隧道转发 + TCP 17511 代理
-- 四步自检 + 实时延迟显示
+All Rights Reserved
