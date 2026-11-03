@@ -282,40 +282,17 @@ static class Program
             return;
         }
 
-        try
+        // 绑定端口：最多重试 12 次，等旧实例彻底释放
+        string bindErr = "";
+        bool bound = false;
+        for (int attempt = 0; attempt < 12 && !bound; attempt++)
         {
-            tunRecv = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-            tunRecv.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-            tunRecv.Bind(new IPEndPoint(IPAddress.Any, TunnelPort));
-            tunRecv.ReceiveTimeout = 200;
-
-            tunSend = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-            tunSend.Bind(new IPEndPoint(IPAddress.Any, 0));
-
-            patchSock = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-            patchSock.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-            patchSock.Bind(new IPEndPoint(IPAddress.Loopback, PatchUdp));
-            patchSock.ReceiveTimeout = 200;
-
-            queryOut = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-            queryOut.Bind(new IPEndPoint(IPAddress.Loopback, 0));
-            queryOut.ReceiveTimeout = 200;
-
-            gameUdp = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-            gameUdp.Bind(new IPEndPoint(IPAddress.Loopback, 0));
-            gameUdp.ReceiveTimeout = 200;
-
-            udpIn = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-            udpIn.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-            udpIn.Bind(new IPEndPoint(IPAddress.Loopback, PatchUdpData));
-            udpIn.ReceiveTimeout = 200;
-
-            patchTcp = new TcpListener(IPAddress.Loopback, PatchTcp);
-            patchTcp.Start();
+            try { BindAll(); bound = true; }
+            catch (Exception ex) { bindErr = ex.Message; CleanupSockets(); Thread.Sleep(400); }
         }
-        catch (Exception ex)
+        if (!bound)
         {
-            MessageBox.Show("端口占用：" + ex.Message + "\n\n请关闭其他实例后重试", "联机助手");
+            MessageBox.Show("端口占用：" + bindErr + "\n\n请关闭其他实例后重试", "联机助手");
             return;
         }
 
@@ -334,6 +311,52 @@ static class Program
         lblState.Text = "状态：运行中（等补丁接入）";
         lblState.ForeColor = Color.FromArgb(30, 130, 60);
         lblPeer.Text = peerIp != null ? ("隧道对端：正在握手 " + peerIp) : "隧道对端：正在广播寻找";
+    }
+
+    // 绑定所有本机端口（可重试）
+    static void BindAll()
+    {
+        CleanupSockets();
+
+        tunRecv = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+        tunRecv.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+        tunRecv.Bind(new IPEndPoint(IPAddress.Any, TunnelPort));
+        tunRecv.ReceiveTimeout = 200;
+
+        tunSend = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+        tunSend.Bind(new IPEndPoint(IPAddress.Any, 0));
+
+        patchSock = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+        patchSock.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+        patchSock.Bind(new IPEndPoint(IPAddress.Loopback, PatchUdp));
+        patchSock.ReceiveTimeout = 200;
+
+        queryOut = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+        queryOut.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        queryOut.ReceiveTimeout = 200;
+
+        gameUdp = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+        gameUdp.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        gameUdp.ReceiveTimeout = 200;
+
+        udpIn = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+        udpIn.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+        udpIn.Bind(new IPEndPoint(IPAddress.Loopback, PatchUdpData));
+        udpIn.ReceiveTimeout = 200;
+
+        patchTcp = new TcpListener(IPAddress.Loopback, PatchTcp);
+        patchTcp.Start();
+    }
+
+    static void CleanupSockets()
+    {
+        try { if (tunRecv != null) { tunRecv.Close(); tunRecv = null; } } catch { }
+        try { if (tunSend != null) { tunSend.Close(); tunSend = null; } } catch { }
+        try { if (patchSock != null) { patchSock.Close(); patchSock = null; } } catch { }
+        try { if (queryOut != null) { queryOut.Close(); queryOut = null; } } catch { }
+        try { if (gameUdp != null) { gameUdp.Close(); gameUdp = null; } } catch { }
+        try { if (udpIn != null) { udpIn.Close(); udpIn = null; } } catch { }
+        try { if (patchTcp != null) { patchTcp.Stop(); patchTcp = null; } } catch { }
     }
 
     static void StopAll()
