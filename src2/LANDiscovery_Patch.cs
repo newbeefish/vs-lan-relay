@@ -51,22 +51,10 @@ static class Patch
     {
         try
         {
-            // 结束旧的补丁实例，否则端口(17511/17477)会被它占着
-            try
-            {
-                int me = System.Diagnostics.Process.GetCurrentProcess().Id;
-                foreach (System.Diagnostics.Process p in System.Diagnostics.Process.GetProcessesByName("LANDiscovery"))
-                    if (p.Id != me) { try { p.Kill(); p.WaitForExit(1500); } catch { } }
-                Thread.Sleep(400);
-            }
-            catch { }
 
             ctrl = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
             ctrl.Bind(new IPEndPoint(IPAddress.Any, 0));
             ctrl.ReceiveTimeout = 200;
-
-            StartTcpBridge();
-            StartUdpBridge();
 
             Thread r = new Thread(CtrlLoop) { IsBackground = true }; r.Start();
             Thread w = new Thread(Watchdog) { IsBackground = true }; w.Start();
