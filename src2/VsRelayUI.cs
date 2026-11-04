@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Net;
@@ -30,7 +31,7 @@ static class Program
     const int PatchUdp = 50190;
     const int PatchTcp = 17512;
     const int PatchUdpData = 17513;
-    const string Ver = "R1";
+    const string Ver = "R2";
 
     static string myIp, peerIp, peerHint;
     const bool LossGuard = true;   // 防丢包开关（备份版用 false）
@@ -50,10 +51,27 @@ static class Program
     static EndPoint patchEp;
 
     static Form form;
-    static Label lblState, lblPeer, lblCount, lblCheck;
+    static Label lblState, lblPeer, lblCount, lblCheck, lblRole;
     static TextBox txtPeer;
     static Button btn;
     static string logPath;
+    // ===== 联机身份 =====
+    static string myId = "玩家";
+    static bool iAm1P = false;                  // 实时判定：谁发房间包谁是1P
+    static bool hostConfirmed = false;          // 一旦自己建过房，就锁定为1P
+    static readonly object peerListLock = new object();
+    static readonly Dictionary<string, DateTime> peerSeen = new Dictionary<string, DateTime>();
+    static readonly Dictionary<string, string> peerIds = new Dictionary<string, string>();
+    static readonly Dictionary<string, int> peerRtt = new Dictionary<string, int>();
+
+    static OverlayForm overlay;
+    static KeyHook hook;
+    static bool devMode = false;
+    static DateTime lastHookLog = DateTime.MinValue;
+    static DateTime lastPingLog = DateTime.MinValue;
+    static CheckBox chkSimple;
+    static TextBox txtId;
+    static ListBox lstPeers;
     static NotifyIcon tray = null;
     static bool reallyExit = false;
     static bool gameSeen = false;
@@ -76,9 +94,39 @@ static class Program
         }
         catch { }
 
+        devMode = Array.IndexOf(Environment.GetCommandLineArgs(), "--dev") >= 0;
         selfTest = Array.IndexOf(Environment.GetCommandLineArgs(), "--loop") >= 0;
         Application.EnableVisualStyles();
         BuildUi();
+        try
+        {
+            overlay = new OverlayForm();
+            overlay.Show();
+            overlay.Hide();
+
+            hook = new KeyHook();
+            hook.OnEmojiKey += delegate (int idx)
+            {
+                if (idx < 0 || idx > 5) return;
+                int e = (idx < KeyMapForm.EmojiMap.Length) ? KeyMapForm.EmojiMap[idx] : idx;
+                idx = e;
+                bool me1p = iAm1P || peerIp == null || !running;
+                if (overlay != null) overlay.Emoji(me1p, idx);
+                SendEmoji(idx, me1p);
+            };
+            hook.OnModifierAction += delegate (Keys dest, bool sendUp)
+            {
+                try { KeyInject.Send(dest, sendUp); } catch { }
+            };
+            KeyMapForm.EmojiMap = KeyMapForm.LoadEmojiMap();
+            HookReload();
+            hook.Install();
+            hook.StartModifierPolling();
+            Log("[钩子] 安装=" + hook.Installed + "  重映射来源=" + (hook.RemapFrom == null ? 0 : hook.RemapFrom.Length));
+            Log("[叠加层] 已创建");
+        }
+        catch { }
+
         Application.Run(form);
     }
 
@@ -92,7 +140,7 @@ static class Program
     {
         form = new Form();
         form.Text = "死神VS火影 联机助手";
-        form.ClientSize = new Size(560, 420);
+        form.ClientSize = new Size(820, 430);
         form.StartPosition = FormStartPosition.CenterScreen;
         form.FormBorderStyle = FormBorderStyle.FixedSingle;
         form.MaximizeBox = false;
@@ -128,8 +176,51 @@ static class Program
         lblState = Mk("状态：未启动", 30, 164, Color.DimGray);
         lblPeer = Mk("隧道对端：未连接", 30, 186, Color.DimGray);
         lblCheck = Mk("补丁：未检测", 30, 208, Color.DimGray);
-        lblCount = Mk("已转发 0   已接收 0   延迟 --", 30, 240, Color.DimGray);
+        lblRole = Mk("我的角色：未判定", 30, 232, Color.DimGray);
+        lblRole.Font = new Font("Microsoft YaHei", 11F, FontStyle.Bold);
+
+        lblCount = Mk("已转发 0   已接收 0   延迟 --", 30, 258, Color.DimGray);
+        lblCount.AutoSize = false;
+        lblCount.Size = new Size(500, 22);
         lblCount.Font = new Font("Microsoft YaHei", 10F);
+
+        Label lbId = new Label();
+        lbId.Text = "我的 ID："; lbId.AutoSize = true; lbId.Location = new Point(560, 100);
+        form.Controls.Add(lbId);
+
+        txtId = new TextBox();
+        txtId.Location = new Point(560, 122); txtId.Size = new Size(230, 26);
+        txtId.Text = LoadId();
+        txtId.TextChanged += delegate
+        {
+            string v = txtId.Text.Trim();
+            myId = v.Length > 0 ? v : "玩家";
+            SaveId(myId);
+        };
+        form.Controls.Add(txtId);
+
+        Label lbList = new Label();
+        lbList.Text = "在线对端（点击切换）："; lbList.AutoSize = true; lbList.Location = new Point(560, 158);
+        form.Controls.Add(lbList);
+
+        lstPeers = new ListBox();
+        lstPeers.Location = new Point(560, 180); lstPeers.Size = new Size(230, 180);
+        lstPeers.Font = new Font("Microsoft YaHei", 9F);
+        lstPeers.IntegralHeight = false;
+        lstPeers.SelectedIndexChanged += delegate
+        {
+            if (lstPeers.SelectedIndex < 0) return;
+            string ip = ParseIpFromItem(lstPeers.SelectedItem as string);
+            if (ip == null) return;
+            if (running && ip != peerIp)
+            {
+                peerIp = ip;
+                peerLocked = true;
+                Log("切换到对端 " + ip);
+                RefreshPeerList();
+            }
+        };
+        form.Controls.Add(lstPeers);
 
         btn = new Button();
         btn.Text = "开 始 运 行";
@@ -142,6 +233,38 @@ static class Program
         btn.Click += delegate { if (running) StopAll(); else StartAll(); };
         form.Controls.Add(btn);
 
+        Button btnKeys = new Button();
+        btnKeys.Text = "自 定 义 键 位";
+        btnKeys.Location = new Point(270, 280); btnKeys.Size = new Size(160, 54);
+        btnKeys.FlatStyle = FlatStyle.Flat;
+        btnKeys.FlatAppearance.BorderColor = Color.FromArgb(200, 200, 200);
+        btnKeys.BackColor = Color.White;
+        btnKeys.Font = new Font("Microsoft YaHei", 10F);
+        btnKeys.Cursor = Cursors.Hand;
+        btnKeys.Click += delegate
+        {
+            using (KeyMapForm kf = new KeyMapForm()) kf.ShowDialog(form);
+            HookReload();          // 保存后立即生效，不用重启
+            Log("[钩子] 键位已重新加载，源键数=" + (hook != null && hook.RemapFrom != null ? hook.RemapFrom.Length : 0));
+        };
+        form.Controls.Add(btnKeys);
+
+        chkSimple = new CheckBox();
+        chkSimple.Text = "极简模式（关闭叠加层）";
+        chkSimple.AutoSize = true;
+        chkSimple.Location = new Point(270, 348);
+        chkSimple.ForeColor = Color.Gray;
+        chkSimple.CheckedChanged += delegate
+        {
+            if (overlay != null) overlay.Enabled = !chkSimple.Checked;
+            Log("[叠加层] " + (chkSimple.Checked ? "极简模式：已关闭渲染" : "已恢复渲染"));
+        };
+        form.Controls.Add(chkSimple);
+
+
+
+
+
         Label f = new Label();
         f.Text = "游戏目录需安装补丁（安装器会自动完成）";
         f.ForeColor = Color.Silver; f.AutoSize = true; f.Location = new Point(30, 350);
@@ -151,9 +274,31 @@ static class Program
         tm.Interval = 500;
         tm.Tick += delegate
         {
+            // 单人 / 未联机时默认自己是 1P
+            bool effective1P = iAm1P || peerIp == null || !running;
+            if (overlay != null && chkSimple != null) overlay.Enabled = !chkSimple.Checked;
+            if (overlay != null)
+            {
+                overlay.IAm1P = effective1P;
+                overlay.Id1P = effective1P ? myId : PeerId();
+                overlay.Id2P = effective1P ? PeerId() : myId;
+                overlay.ShowIds = true;   // 游戏开着就一直显示（鼠标穿透，不影响操作）
+            }
+
+            if (hook != null)
+            {
+                hook.RemapEnabled = true;
+            }
+
+            if (running)
+            {
+                lblRole.Text = effective1P ? (peerIp == null ? "我的角色：1P（单人）" : "我的角色：1P（房主）") : "我的角色：2P（加入者）";
+                lblRole.ForeColor = effective1P ? Color.FromArgb(200, 90, 0) : Color.FromArgb(30, 100, 180);
+            }
             string rttTxt = rtt >= 0 ? ("延迟 " + rtt + " ms")
                           : (peerIp == null ? "延迟 --" : "延迟 测量中...");
             lblCount.Text = "已转发 " + fwd + "   已接收 " + recv + "   " + rttTxt;
+            if (overlay != null) overlay.RttText = (running && rtt >= 0) ? (rtt + " ms") : "";
 
             if (rtt >= 0)
                 lblCount.ForeColor = rtt < 100 ? Color.FromArgb(30, 150, 70)
@@ -258,6 +403,33 @@ static class Program
                 Environment.SpecialFolder.LocalApplicationData), "VsGameRelay"), "config.ini");
         }
     }
+    static string ConfigDir()
+    {
+        string d = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "VsGameRelay");
+        try { Directory.CreateDirectory(d); } catch { }
+        return d;
+    }
+
+    static string LoadId()
+    {
+        try
+        {
+            string p = Path.Combine(ConfigDir(), "myid.txt");
+            if (File.Exists(p))
+            {
+                string s = File.ReadAllText(p).Trim();
+                if (s.Length > 0) { myId = s; return s; }
+            }
+        }
+        catch { }
+        return "玩家";
+    }
+
+    static void SaveId(string id)
+    {
+        try { File.WriteAllText(Path.Combine(ConfigDir(), "myid.txt"), id == null ? "" : id); } catch { }
+    }
+
     static string LoadPeer()
     {
         try { if (File.Exists(ConfigPath)) return File.ReadAllText(ConfigPath).Trim(); } catch { }
@@ -412,7 +584,8 @@ static class Program
             Array.Copy(q, 0, env, 2, q.Length);
             TunSend(env);
             fwd++;
-            Log("转发查询 " + q.Length + "B -> " + peerIp);
+iAm1P = false;   // 我发了搜索请求（找房间）→ 我是 2P 加入者
+    Log("转发查询 " + q.Length + "B -> " + peerIp + "  [我是2P 加入者]");
         }
     }
 
@@ -495,8 +668,9 @@ static class Program
                 off = 3;
             }
 
-            if (type == 1 && n > off)
+if (type == 1 && n > off)    // 对方发了搜索请求 → 对方找房，我是房主 1P
             {
+                iAm1P = true;
                 int len = buf[off];
                 if (n < off + 1 + len) continue;
                 try
@@ -515,7 +689,7 @@ static class Program
                 if (patchEp != null)
                 {
                     byte[] m = Encoding.ASCII.GetBytes("H|" + peerIp + "|" + hex);
-                    try { patchSock.SendTo(m, patchEp); recv++; Log("房间回复 -> 补丁 (" + len + "B)"); } catch { }
+                    try { patchSock.SendTo(m, patchEp); recv++; if (!hostConfirmed) iAm1P = false; Log("房间回复 -> 补丁 (" + len + "B)  [" + (hostConfirmed ? "我仍是1P" : "我是2P") + "]"); } catch { }
                 }
             }
             else if (type == 2)
@@ -525,6 +699,7 @@ static class Program
             else if (type == 3)
             {
                 if (pingAt != DateTime.MinValue) rtt = (int)(DateTime.Now - pingAt).TotalMilliseconds;
+                lock (peerListLock) { if (peerIp != null) peerRtt[peerIp] = rtt; }
                 lblPeer.Text = "隧道对端：" + peerIp + "（已连接）";
                 lblPeer.ForeColor = Color.FromArgb(30, 130, 60);
             }
@@ -550,6 +725,12 @@ static class Program
                     links[id] = l;
                 }
                 l.Send(buf, off + 1, n - off - 1);
+            }
+            else if (type == 20 && n > off + 1)
+            {
+                int idx = buf[off];
+                bool p1 = buf[off + 1] != 0;
+                if (overlay != null) overlay.Emoji(p1, idx);
             }
             else if (type == 11)
             {
@@ -614,7 +795,7 @@ static class Program
             env[0] = 4;
             env[1] = (byte)Math.Min(255, n);
             Array.Copy(buf, 0, env, 2, n);
-            TunSend(env); fwd++; Log("本机游戏回包 " + n + "B -> 对方");
+            TunSend(env); fwd++; iAm1P = true; hostConfirmed = true; Log("本机游戏回包 " + n + "B -> 对方  [我是1P]");
         }
     }
 
@@ -728,6 +909,120 @@ static class Program
     }
 
     // ============================================================
+    // ===== 对端列表 =====
+    static void RefreshPeerList()
+    {
+        try
+        {
+            form.BeginInvoke((Action)delegate
+            {
+                if (lstPeers == null) return;
+                List<string> items = new List<string>();
+                List<string> order = new List<string>();
+                lock (peerListLock)
+                {
+                    List<string> dead = new List<string>();
+                    foreach (KeyValuePair<string, DateTime> kv in peerSeen)
+                        if ((DateTime.Now - kv.Value).TotalSeconds > 12) dead.Add(kv.Key);
+                    foreach (string k in dead) { peerSeen.Remove(k); peerRtt.Remove(k); peerIds.Remove(k); }
+
+                    foreach (KeyValuePair<string, string> kv in peerIds)
+                        if (peerSeen.ContainsKey(kv.Key)) order.Add(kv.Key);
+                    order.Sort();
+                    foreach (string ip in order)
+                    {
+                        int r = peerRtt.ContainsKey(ip) ? peerRtt[ip] : -1;
+                        string id = peerIds.ContainsKey(ip) ? peerIds[ip] : "玩家";
+                        string mark = (ip == peerIp) ? "★ " : "   ";
+                        items.Add(mark + ip + "   " + id + (r >= 0 ? ("   " + r + "ms") : ""));
+                    }
+                }
+                lstPeers.BeginUpdate();
+                lstPeers.Items.Clear();
+                foreach (string s in items) lstPeers.Items.Add(s);
+                lstPeers.EndUpdate();
+            });
+        }
+        catch { }
+    }
+
+    // 只有一个对端时自动选中
+    static void PeerListAutoPick(string ip)
+    {
+        lock (peerListLock)
+        {
+            if (peerIp == null && peerSeen.Count == 1) peerIp = ip;
+        }
+    }
+
+    static IntPtr FindGameHwnd()
+    {
+        try
+        {
+            foreach (Process p in Process.GetProcesses())
+            {
+                try
+                {
+                    string n = p.ProcessName;
+                    string t = p.MainWindowTitle;
+                    if (p.MainWindowHandle == IntPtr.Zero) continue;
+                    if (n.IndexOf("Bleach", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        n.IndexOf("Naruto", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        (t != null && (t.IndexOf("死神", StringComparison.Ordinal) >= 0 || t.IndexOf("火影", StringComparison.Ordinal) >= 0)))
+                        return p.MainWindowHandle;
+                }
+                catch { }
+            }
+        }
+        catch { }
+        return IntPtr.Zero;
+    }
+
+
+    static string PeerId()
+    {
+        try
+        {
+            lock (peerListLock)
+                if (peerIp != null && peerIds.ContainsKey(peerIp)) return peerIds[peerIp];
+        }
+        catch { }
+        return "";
+    }
+
+    static void SendEmoji(int idx, bool isP1)
+    {
+        if (!running || peerIp == null) return;
+        byte[] e = new byte[] { 20, (byte)idx, (byte)(isP1 ? 1 : 0) };
+        TunSend(e);
+    }
+
+    static void HookReload()
+    {
+        try
+        {
+            Keys[] cur = KeyMapForm.Load();
+            if (hook != null)
+            {
+                hook.RemapFrom = cur;
+                hook.RemapTo = KeyMapForm.Defaults;
+            }
+        }
+        catch { }
+    }
+
+    static string ParseIpFromItem(string s)
+    {
+        try
+        {
+            s = s.TrimStart('★', ' ');
+            int sp = s.IndexOf(' ');
+            if (sp > 0) return s.Substring(0, sp);
+        }
+        catch { }
+        return null;
+    }
+
     static void DiscLoop()
     {
         Socket disc = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
@@ -736,7 +1031,7 @@ static class Program
         try { disc.Bind(new IPEndPoint(IPAddress.Any, DiscPort)); } catch { }
         disc.ReceiveTimeout = 250;
 
-        byte[] hello = Encoding.ASCII.GetBytes("VSGR|" + Ver + "|" + myIp);
+        byte[] hello = Encoding.ASCII.GetBytes("VSGR|R2|" + myIp + "|" + Uri.EscapeDataString(myId == null ? "玩家" : myId));
         byte[] ping = new byte[] { 2 };
         byte[] buf = new byte[512];
         EndPoint any = new IPEndPoint(IPAddress.Any, 0);
@@ -771,9 +1066,18 @@ static class Program
                     if (s.StartsWith("VSGR|"))
                     {
                         string[] p = s.Split('|');
-                        if (p.Length >= 3 && p[1] == Ver && p[2] != myIp)
+                        if (p.Length >= 3 && (p[1] == "R1" || p[1] == "R2") && p[2] != myIp)
                         {
                             string ip = p[2];
+                            string pid = "玩家";
+                            try { if (p.Length >= 4) pid = Uri.UnescapeDataString(p[3]); } catch { }
+                            lock (peerListLock)
+                            {
+                                peerSeen[ip] = DateTime.Now;
+                                peerIds[ip] = pid;
+                                if (!peerRtt.ContainsKey(ip)) peerRtt[ip] = -1;
+                            }
+                            RefreshPeerList();
                             if (!peerLocked || peerIp == null)
                             {
                                 peerIp = ip;
