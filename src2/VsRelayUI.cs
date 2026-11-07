@@ -53,6 +53,7 @@ static class Program
     static Form form;
     static Label lblState, lblPeer, lblCount, lblCheck, lblRole;
     static TextBox txtPeer;
+    static Label lblTunnelF;
     static Button btn;
     static string logPath;
     // ===== 联机身份 =====
@@ -67,14 +68,16 @@ static class Program
     static OverlayForm overlay;
     static KeyHook hook;
     static bool devMode = false;
+    static bool gameSeen = false;
+    static int gameGone = 0;
     static DateTime lastHookLog = DateTime.MinValue;
     static DateTime lastPingLog = DateTime.MinValue;
     static CheckBox chkSimple;
+    static Label lblTunnel, lblHint2, lbListCtl;
     static TextBox txtId;
     static ListBox lstPeers;
     static NotifyIcon tray = null;
     static bool reallyExit = false;
-    static bool gameSeen = false;
 
     [STAThread]
     static void Main()
@@ -130,6 +133,11 @@ static class Program
         Application.Run(form);
     }
 
+    static void LogV(string s)
+    {
+        if (devMode) Log(s);
+    }
+
     static void Log(string s)
     {
         try { File.AppendAllText(logPath, DateTime.Now.ToString("HH:mm:ss.fff") + "  " + s + "\r\n"); } catch { }
@@ -139,8 +147,8 @@ static class Program
     static void BuildUi()
     {
         form = new Form();
-        form.Text = "死神VS火影 联机助手";
-        form.ClientSize = new Size(820, 430);
+        form.Text = devMode ? "死神VS火影 联机助手 —— 开发版" : "死神VS火影 联机助手";
+        form.ClientSize = new Size(820, 413);
         form.StartPosition = FormStartPosition.CenterScreen;
         form.FormBorderStyle = FormBorderStyle.FixedSingle;
         form.MaximizeBox = false;
@@ -159,7 +167,8 @@ static class Program
         form.Controls.Add(s);
 
         Label l = new Label();
-        l.Text = "隧道对端：自动发现在 Radmin 网段内完成，无需填写"; l.AutoSize = true; l.Location = new Point(30, 100);
+        l.Text = "隧道对端：自动发现（无需填写）"; l.AutoSize = true; l.Location = new Point(30, 100);
+        lblTunnel = l;
         form.Controls.Add(l);
 
         txtPeer = new TextBox();
@@ -171,25 +180,26 @@ static class Program
         Label l2 = new Label();
         l2.Text = "找到后自动填入并锁定，直到下次点「开始运行」";
         l2.ForeColor = Color.Silver; l2.AutoSize = true; l2.Location = new Point(284, 126);
+        lblHint2 = l2;
         form.Controls.Add(l2);
 
         lblState = Mk("状态：未启动", 30, 164, Color.DimGray);
         lblPeer = Mk("隧道对端：未连接", 30, 186, Color.DimGray);
         lblCheck = Mk("补丁：未检测", 30, 208, Color.DimGray);
-        lblRole = Mk("我的角色：未判定", 30, 232, Color.DimGray);
+        lblRole = Mk("我的角色：未判定", 30, 248, Color.DimGray);
         lblRole.Font = new Font("Microsoft YaHei", 11F, FontStyle.Bold);
 
-        lblCount = Mk("已转发 0   已接收 0   延迟 --", 30, 258, Color.DimGray);
+        lblCount = Mk("已转发 0   已接收 0   延迟 --", 30, 270, Color.DimGray);
         lblCount.AutoSize = false;
         lblCount.Size = new Size(500, 22);
         lblCount.Font = new Font("Microsoft YaHei", 10F);
 
         Label lbId = new Label();
-        lbId.Text = "我的 ID："; lbId.AutoSize = true; lbId.Location = new Point(560, 100);
+        lbId.Text = "我的 ID："; lbId.AutoSize = true; lbId.Location = new Point(560, 88);
         form.Controls.Add(lbId);
 
         txtId = new TextBox();
-        txtId.Location = new Point(560, 122); txtId.Size = new Size(230, 26);
+        txtId.Location = new Point(560, 110); txtId.Size = new Size(230, 26);
         txtId.Text = LoadId();
         txtId.TextChanged += delegate
         {
@@ -200,11 +210,12 @@ static class Program
         form.Controls.Add(txtId);
 
         Label lbList = new Label();
-        lbList.Text = "在线对端（点击切换）："; lbList.AutoSize = true; lbList.Location = new Point(560, 158);
+        lbList.Text = "在线对端（点击切换）："; lbList.AutoSize = true; lbList.Location = new Point(560, 146);
+        lbListCtl = lbList;
         form.Controls.Add(lbList);
 
         lstPeers = new ListBox();
-        lstPeers.Location = new Point(560, 180); lstPeers.Size = new Size(230, 180);
+        lstPeers.Location = new Point(560, 168); lstPeers.Size = new Size(230, 120);
         lstPeers.Font = new Font("Microsoft YaHei", 9F);
         lstPeers.IntegralHeight = false;
         lstPeers.SelectedIndexChanged += delegate
@@ -224,7 +235,7 @@ static class Program
 
         btn = new Button();
         btn.Text = "开 始 运 行";
-        btn.Location = new Point(30, 280); btn.Size = new Size(220, 54);
+        btn.Location = new Point(30, 304); btn.Size = new Size(190, 46);
         btn.FlatStyle = FlatStyle.Flat;
         btn.FlatAppearance.BorderColor = Color.FromArgb(60, 60, 60);
         btn.BackColor = Color.White;
@@ -235,7 +246,7 @@ static class Program
 
         Button btnKeys = new Button();
         btnKeys.Text = "自 定 义 键 位";
-        btnKeys.Location = new Point(270, 280); btnKeys.Size = new Size(160, 54);
+        btnKeys.Location = new Point(236, 304); btnKeys.Size = new Size(140, 46);
         btnKeys.FlatStyle = FlatStyle.Flat;
         btnKeys.FlatAppearance.BorderColor = Color.FromArgb(200, 200, 200);
         btnKeys.BackColor = Color.White;
@@ -249,10 +260,40 @@ static class Program
         };
         form.Controls.Add(btnKeys);
 
+        Button btnMode = new Button();
+        btnMode.Text = "切 换 模 式";
+        btnMode.Location = new Point(392, 304); btnMode.Size = new Size(140, 46);
+        btnMode.FlatStyle = FlatStyle.Flat;
+        btnMode.FlatAppearance.BorderColor = Color.FromArgb(200, 200, 200);
+        btnMode.BackColor = Color.White;
+        btnMode.Font = new Font("Microsoft YaHei", 9F);
+        btnMode.Cursor = Cursors.Hand;
+        btnMode.Click += delegate
+        {
+            ipv6Mode = !ipv6Mode;
+            btnMode.Text = ipv6Mode ? "模 式：IPv6" : "模 式：蓝盾";
+            if (ipv6Mode)
+            {
+                try { StopAll(); } catch { }          // 进入 IPv6：停掉蓝盾全部线程
+                try { v6.Start(); } catch { }         // 启动 IPv6
+                Log("[模式] 已切到 IPv6，蓝盾已关闭");
+            }
+            else
+            {
+                try { v6.Stop(); } catch { }          // 进入蓝盾：停掉 IPv6
+                try { v6relay.Stop(); } catch { }     // 并停转发层
+                Log("[模式] 已切到蓝盾，IPv6 已关闭");
+            }
+            ApplyMode();
+        };
+        form.Controls.Add(btnMode);
+
+        BuildV6Panel();
+
         chkSimple = new CheckBox();
         chkSimple.Text = "极简模式（关闭叠加层）";
         chkSimple.AutoSize = true;
-        chkSimple.Location = new Point(270, 348);
+        chkSimple.Location = new Point(420, 363);
         chkSimple.ForeColor = Color.Gray;
         chkSimple.CheckedChanged += delegate
         {
@@ -267,7 +308,7 @@ static class Program
 
         Label f = new Label();
         f.Text = "游戏目录需安装补丁（安装器会自动完成）";
-        f.ForeColor = Color.Silver; f.AutoSize = true; f.Location = new Point(30, 350);
+        f.ForeColor = Color.Silver; f.AutoSize = true; f.Location = new Point(30, 366);
         form.Controls.Add(f);
 
         System.Windows.Forms.Timer tm = new System.Windows.Forms.Timer();
@@ -275,6 +316,31 @@ static class Program
         tm.Tick += delegate
         {
             // 单人 / 未联机时默认自己是 1P
+            // 游戏退出看门狗（与模式无关，始终生效）
+            try
+            {
+                bool alive = false;
+                foreach (System.Diagnostics.Process gp in System.Diagnostics.Process.GetProcesses())
+                {
+                    string gn = gp.ProcessName.ToLower();
+                    if (gn.Contains("bleach") || gn.Contains("naruto") || gn.Contains("死神")) { alive = true; break; }
+                }
+                if (alive) { gameSeen = true; gameGone = 0; }
+                else if (gameSeen)
+                {
+                    gameGone++;
+                    if (gameGone >= 3)    // 约 9 秒确认退出
+                    {
+                        Log("[看门狗] 游戏已退出，程序关闭");
+                        try { reallyExit = true; StopAll(); } catch { }
+                        try { if (tray != null) tray.Visible = false; } catch { }
+                        try { form.Close(); } catch { }
+                        return;
+                    }
+                }
+            }
+            catch { }
+
             bool effective1P = iAm1P || peerIp == null || !running;
             if (overlay != null && chkSimple != null) overlay.Enabled = !chkSimple.Checked;
             if (overlay != null)
@@ -288,6 +354,12 @@ static class Program
             if (hook != null)
             {
                 hook.RemapEnabled = true;
+                if (v6.Connected && v6.Peer != null && !v6relay.Running)
+                {
+                    v6relay.Start(v6.Peer);
+                    Log("[IPv6] 双向转发层启动  " + v6.Peer);
+                }
+                if (!v6.Connected && v6relay.Running) v6relay.Stop();
             }
 
             if (running)
@@ -297,7 +369,55 @@ static class Program
             }
             string rttTxt = rtt >= 0 ? ("延迟 " + rtt + " ms")
                           : (peerIp == null ? "延迟 --" : "延迟 测量中...");
-            lblCount.Text = "已转发 " + fwd + "   已接收 " + recv + "   " + rttTxt;
+            if (ipv6Mode)
+            {
+                long s6 = v6.Sent, r6 = v6.Recv;
+                int r6ms = v6.Rtt;
+                if (v6.PeerCode.Length > 0 && txtPeerCode != null && txtPeerCode.Text.Length == 0)
+                    txtPeerCode.Text = v6.PeerCode;   // 自动回填对方编号
+                if (!v6.Connected && v6.PeerCode.Length == 0 && txtPeerCode != null && txtPeerCode.ReadOnly)
+                {
+                    txtPeerCode.Text = "";            // 断线后清掉幽灵编号
+                    txtPeerCode.ReadOnly = false;
+                }
+                lblCount.Text = "已发送 " + s6 + "   已接收 " + r6 + "   " + (r6ms >= 0 ? ("延迟 " + r6ms + " ms") : "延迟 --");
+                if (overlay != null) overlay.RttText = r6ms >= 0 ? (r6ms + " ms") : "";
+                    if (pnlV6 != null)
+                    {
+                        foreach (Control hc in pnlV6.Controls)
+                        {
+                            if (hc.Text != null && hc.Text.IndexOf("双方都填了对方地址", StringComparison.Ordinal) >= 0)
+                                hc.Visible = v6.MyCode.Length > 0;
+                        }
+                    }
+                    if (v6.MyCode.Length == 0)
+                    {
+                        lblV6State.Text = "状态：未获取到公网 IPv6\r\n请检查路由器是否开启 IPv6（原生 / DHCPv6）\r\n或联系运营商开通后重启本程序";
+                        lblV6State.ForeColor = Color.FromArgb(200, 60, 60);
+                    }
+                    else if (v6.Connected)
+                    {
+                        lblV6State.Text = "状态：已连接 · " + (r6ms >= 0 ? ("延迟 " + r6ms + " ms") : "延迟 测量中") + " · 已锁定";
+                        lblV6State.ForeColor = Color.FromArgb(30, 130, 60);
+                    }
+                    else
+                    {
+                        lblV6State.Text = string.IsNullOrEmpty(v6.LastError) ? "状态：等待对方连接…" : "状态：对方无响应，请确认对方已开启 IPv6 模式";
+                        lblV6State.ForeColor = Color.DimGray;
+                    }
+                return;
+            }
+
+            string linkTxt;
+            if (ipv6Mode) linkTxt = "链路：IPv6" + (v6.Connected ? " 已连接 " + v6.Rtt + "ms" : " 未连接");
+            else linkTxt = (peerIp != null ? "链路：蓝盾" : "链路：未连接");
+
+            lblCount.Text = "已转发 " + fwd + "   已接收 " + recv + "   " + rttTxt + "   " + linkTxt;
+            if (overlay != null && v6.Connected) overlay.RttText = v6.Rtt + " ms";
+            if (v6.PeerCode.Length > 0 && txtPeerCode != null && txtPeerCode.Text.Length == 0)
+                txtPeerCode.Text = v6.PeerCode;   // 自动回填对方编号
+            if (v6relay.Running)
+                lblCount.Text += "   转发 出" + v6relay.BytesOut + "B/入" + v6relay.BytesIn + "B";
             if (overlay != null) overlay.RttText = (running && rtt >= 0) ? (rtt + " ms") : "";
 
             if (rtt >= 0)
@@ -307,6 +427,7 @@ static class Program
             else
                 lblCount.ForeColor = Color.DimGray;
         };
+        Relayout();
         tm.Start();
 
         // 托盘图标
@@ -544,7 +665,7 @@ static class Program
         btn.Text = "开 始 运 行";
         btn.BackColor = Color.White;
         btn.ForeColor = Color.Black;
-        lblState.Text = "状态：已停止";
+        lblState.Text = "状态：未启动";
         lblState.ForeColor = Color.DimGray;
         lblPeer.Text = "隧道对端：未连接";
         try { txtPeer.Text = ""; } catch { }
@@ -688,7 +809,18 @@ if (type == 1 && n > off)    // 对方发了搜索请求 → 对方找房，我�
                 for (int i = 0; i < len; i++) hex += buf[off + 1 + i].ToString("x2");
                 if (patchEp != null)
                 {
-                    byte[] m = Encoding.ASCII.GetBytes("H|" + peerIp + "|" + hex);
+                    // IPv6 直连时：加入方把对端地址报成 127.0.0.1，由本地转发层转出
+                string reportIp = peerIp;
+                if (v6.Connected && v6.Peer != null)
+                {
+                    reportIp = "127.0.0.1";     // 双方都用本机转发，纯 IPv6
+                    if (!v6relay.Running)
+                    {
+                        v6relay.Start(v6.Peer);
+                        Log("[IPv6] 双向转发层启动  " + v6.Peer);
+                    }
+                }
+                byte[] m = Encoding.ASCII.GetBytes("H|" + reportIp + "|" + hex);
                     try { patchSock.SendTo(m, patchEp); recv++; if (!hostConfirmed) iAm1P = false; Log("房间回复 -> 补丁 (" + len + "B)  [" + (hostConfirmed ? "我仍是1P" : "我是2P") + "]"); } catch { }
                 }
             }
@@ -1023,6 +1155,249 @@ if (type == 1 && n > off)    // 对方发了搜索请求 → 对方找房，我�
         return null;
     }
 
+    // ===== IPv6 模式界面 =====
+    static bool ipv6Mode = false;
+    static Ipv6Mode v6 = new Ipv6Mode();
+
+    static string MyNumber()
+    {
+        try
+        {
+            string p = Path.Combine(ConfigDir(), "machine.txt");
+            if (File.Exists(p))
+            {
+                string s = File.ReadAllText(p).Trim();
+                if (s.Length == 6) return s;
+            }
+            Random r = new Random(Guid.NewGuid().GetHashCode());
+            string n = r.Next(100000, 999999).ToString();
+            File.WriteAllText(p, n);
+            return n;
+        }
+        catch { return "000000"; }
+    }
+    static V6Relay v6relay = new V6Relay();
+    static Panel pnlV6;
+    static TextBox txtMyCode, txtPeerCode;
+    static Label lblV6State;
+
+    static void BuildV6Panel()
+    {
+        pnlV6 = new Panel();
+        pnlV6.Location = new Point(20, 84);
+        pnlV6.Size = new Size(500, 170);
+        pnlV6.Visible = false;
+        pnlV6.BackColor = Color.White;
+        form.Controls.Add(pnlV6);
+
+        Label l1 = new Label();
+        l1.Text = "我的机子编号（复制给对方）：";
+        l1.AutoSize = true; l1.Location = new Point(8, 4);
+        l1.ForeColor = Color.Gray;
+        pnlV6.Controls.Add(l1);
+
+        txtMyCode = new TextBox();
+        txtMyCode.Location = new Point(8, 32);
+        txtMyCode.Size = new Size(300, 26);
+        txtMyCode.ReadOnly = true;
+        txtMyCode.BackColor = Color.FromArgb(248, 248, 248);
+        txtMyCode.Font = new Font("Consolas", 10F);
+        pnlV6.Controls.Add(txtMyCode);
+
+        Button btnCopy = new Button();
+        btnCopy.Text = "复制";
+        btnCopy.Location = new Point(330, 30);
+        btnCopy.Size = new Size(70, 30);
+        btnCopy.FlatStyle = FlatStyle.Flat;
+        btnCopy.FlatAppearance.BorderColor = Color.FromArgb(200, 200, 200);
+        btnCopy.Click += delegate
+        {
+            try
+            {
+                if (txtMyCode.Text.Length > 0)
+                {
+                    Clipboard.SetText(txtMyCode.Text);
+                    Log("[IPv6] 地址已复制");
+                }
+            }
+            catch { }
+        };
+        pnlV6.Controls.Add(btnCopy);
+
+        Label l2 = new Label();
+        l2.Text = "对方的机子编号（粘贴后自动握手）：";
+        l2.AutoSize = true; l2.Location = new Point(8, 70);
+        l2.ForeColor = Color.Gray;
+        pnlV6.Controls.Add(l2);
+
+        txtPeerCode = new TextBox();
+        txtPeerCode.Location = new Point(8, 92);
+        txtPeerCode.Size = new Size(300, 26);
+        txtPeerCode.Font = new Font("Consolas", 10F);
+        pnlV6.Controls.Add(txtPeerCode);
+
+        Button btnConn = new Button();
+        btnConn.Text = "连接";
+        btnConn.Location = new Point(330, 90);
+        btnConn.Size = new Size(70, 30);
+        btnConn.FlatStyle = FlatStyle.Flat;
+        btnConn.FlatAppearance.BorderColor = Color.FromArgb(200, 200, 200);
+        btnConn.Click += delegate
+        {
+            string code = txtPeerCode.Text.Trim();
+            if (code.Length == 0) { Log("[IPv6] 地址为空"); return; }
+            if (v6.SetPeer(code))
+            {
+                Log("[IPv6] 正在连接对方…");
+                v6.Start();
+                txtPeerCode.ReadOnly = true;
+                btnConn.Enabled = false;
+            }
+            else
+            {
+                Log("[IPv6] " + v6.LastError);
+                MessageBox.Show(v6.LastError ?? "地址无效");
+            }
+        };
+        pnlV6.Controls.Add(btnConn);
+
+        Button btnUnlock = new Button();
+        btnUnlock.Text = "解锁";
+        btnUnlock.Location = new Point(404, 90);
+        btnUnlock.Size = new Size(70, 30);
+        btnUnlock.FlatStyle = FlatStyle.Flat;
+        btnUnlock.FlatAppearance.BorderColor = Color.FromArgb(200, 200, 200);
+        btnUnlock.Click += delegate
+        {
+            v6.ClearPeer();
+            txtPeerCode.Text = "";
+            txtPeerCode.ReadOnly = false;
+            btnConn.Enabled = true;
+            Log("[IPv6] 已解锁，可重新输入地址");
+        };
+        pnlV6.Controls.Add(btnUnlock);
+
+        lblV6State = new Label();
+        lblV6State.Text = "状态：等待操作";
+        lblV6State.AutoSize = false;
+        lblV6State.Size = new Size(470, 54);
+        lblV6State.Location = new Point(8, 123);
+        lblV6State.ForeColor = Color.DimGray;
+        pnlV6.Controls.Add(lblV6State);
+
+        Label l3 = new Label();
+        l3.Text = "提示：双方都填了对方地址后会自动握手，成功后自动锁定";
+        l3.AutoSize = true; l3.Location = new Point(8, 146);
+        l3.ForeColor = Color.Silver;
+        pnlV6.Controls.Add(l3);
+    }
+
+    static Panel pnlRadmin;
+
+    // 把控件搬进容器并设置相对坐标
+    static void MoveTo(Panel p, Control c, int x, int y)
+    {
+        if (c == null || p == null) return;
+        try
+        {
+            if (c.Parent != null) c.Parent.Controls.Remove(c);
+            p.Controls.Add(c);
+            c.Location = new Point(x, y);
+        }
+        catch { }
+    }
+
+    static Control FindByText(string key)
+    {
+        foreach (Control c in form.Controls)
+        {
+            try { if (c.Text != null && c.Text.IndexOf(key, StringComparison.Ordinal) >= 0) return c; }
+            catch { }
+        }
+        return null;
+    }
+
+    // 统一重排：两个容器互斥 + 其余控件固定坐标
+    static void Relayout()
+    {
+        // ---- 容器 ----
+        if (pnlRadmin == null)
+        {
+            pnlRadmin = new Panel();
+            pnlRadmin.Location = new Point(24, 84);
+            pnlRadmin.Size = new Size(500, 170);
+            pnlRadmin.BackColor = Color.White;
+        }
+        if (pnlRadmin.Parent == null) form.Controls.Add(pnlRadmin);
+
+        if (pnlV6 == null) BuildV6Panel();
+        pnlV6.Location = new Point(24, 84);
+        pnlV6.Size = new Size(500, 170);
+        pnlV6.BringToFront();
+
+        // ---- 蓝盾控件搬进容器 ----
+        Control cTunnel = FindByText("隧道对端：自动发现");
+        Control cHint = FindByText("找到后自动填入");
+        if (cHint == null) cHint = FindByText("点击后自动握手");
+        MoveTo(pnlRadmin, cTunnel, 8, 8);
+        MoveTo(pnlRadmin, txtPeer, 8, 32);
+        MoveTo(pnlRadmin, cHint, 210, 62);
+        MoveTo(pnlRadmin, lblState, 8, 74);
+        MoveTo(pnlRadmin, lblPeer, 8, 98);
+        MoveTo(pnlRadmin, lblCheck, 8, 122);
+
+        // ---- 右侧列 ----
+        Control cId = FindByText("我的 ID"); if (cId != null) cId.Location = new Point(556, 84);
+        if (txtId != null) { txtId.Location = new Point(556, 106); txtId.Size = new Size(230, 26); }
+        Control cList = FindByText("在线对端"); if (cList != null) cList.Location = new Point(556, 142);
+        if (lstPeers != null) { lstPeers.Location = new Point(556, 164); lstPeers.Size = new Size(230, 124); }
+
+        // ---- 底部共用 ----
+        if (lblRole != null) lblRole.Location = new Point(30, 259);
+        if (lblCount != null) { lblCount.Location = new Point(30, 283); }
+        if (btn != null) { btn.Location = new Point(30, 313); btn.Size = new Size(190, 46); }
+        Control cKeys = FindByText("自 定 义 键 位"); if (cKeys != null) { cKeys.Location = new Point(236, 313); cKeys.Size = new Size(140, 46); }
+        Control cMode = FindByText("模 式：");
+        if (cMode == null) cMode = FindByText("切 换 模 式");
+        if (cMode != null) { cMode.Visible = true; cMode.Location = new Point(392, 313); cMode.Size = new Size(140, 46); }
+        if (chkSimple != null) chkSimple.Location = new Point(420, 363);
+        Control cFoot = FindByText("游戏目录需安装补丁");
+        if (cFoot != null) cFoot.Location = new Point(30, 367);
+
+        ApplyMode();
+    }
+
+    static void ApplyMode()
+    {
+        bool v6m = ipv6Mode;
+        if (v6m) { try { v6.Start(); } catch { } }   // 进 IPv6 就开监听，对方填了地址即可连入
+
+        if (pnlRadmin != null) pnlRadmin.Visible = !v6m;
+        if (pnlV6 != null) pnlV6.Visible = v6m;
+        if (lstPeers != null) lstPeers.Visible = !v6m;
+        Control cList2 = FindByText("在线对端"); if (cList2 != null) cList2.Visible = !v6m;
+
+        if (v6m)
+        {
+            if (txtMyCode != null)
+            {
+                string mc = v6.MyCode;
+                txtMyCode.Text = mc.Length > 0 ? (mc + MyNumber()) : "未获取到 IPv6";
+                if (mc.Length == 0 && lblV6State != null)
+                {
+                    lblV6State.Text = "状态：未获取到公网 IPv6\n请检查路由器是否开启 IPv6（原生/DHCPv6），\n或联系运营商开通，然后重启本程序。";
+                    lblV6State.ForeColor = Color.FromArgb(200, 60, 60);
+                }
+            }
+        }
+        else
+        {
+            v6.Stop();
+            v6.ClearPeer();
+        }
+        Log("[模式] " + (v6m ? "IPv6 直连" : "蓝盾 VPN"));
+    }
+
     static void DiscLoop()
     {
         Socket disc = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
@@ -1031,7 +1406,10 @@ if (type == 1 && n > off)    // 对方发了搜索请求 → 对方找房，我�
         try { disc.Bind(new IPEndPoint(IPAddress.Any, DiscPort)); } catch { }
         disc.ReceiveTimeout = 250;
 
-        byte[] hello = Encoding.ASCII.GetBytes("VSGR|R2|" + myIp + "|" + Uri.EscapeDataString(myId == null ? "玩家" : myId));
+        string idEnc = Uri.EscapeDataString(myId == null ? "玩家" : myId);
+        byte[] helloV6 = Encoding.ASCII.GetBytes("VSGR|R3|" + myIp + "|" + idEnc + "|" + v6.MyCode);
+        byte[] helloNew = Encoding.ASCII.GetBytes("VSGR|R2|" + myIp + "|" + idEnc);
+        byte[] helloOld = Encoding.ASCII.GetBytes("VSGR|R1|" + myIp);
         byte[] ping = new byte[] { 2 };
         byte[] buf = new byte[512];
         EndPoint any = new IPEndPoint(IPAddress.Any, 0);
@@ -1043,20 +1421,20 @@ if (type == 1 && n > off)    // 对方发了搜索请求 → 对方找房，我�
         int tick = 0;
         while (running)
         {
-            // 每 2 秒广播一次握手请求（已锁定时也发，让对端能重新找到我们）
+            // ---- 广播握手（三种格式并存，兼容各版本）----
             if (tick % 8 == 0)
             {
-                try { disc.SendTo(hello, bcast); } catch { }
+                try { disc.SendTo(helloV6, bcast); } catch { }
             }
 
-            // 心跳
+            // ---- 蓝盾心跳 ----
             if (peerIp != null && tick % 4 == 0)
             {
                 pingAt = DateTime.Now;
                 TunSend(ping);
             }
 
-            // 收对方的握手广播
+            // ---- 收握手 ----
             try
             {
                 int n = disc.ReceiveFrom(buf, ref any);
@@ -1066,11 +1444,19 @@ if (type == 1 && n > off)    // 对方发了搜索请求 → 对方找房，我�
                     if (s.StartsWith("VSGR|"))
                     {
                         string[] p = s.Split('|');
-                        if (p.Length >= 3 && (p[1] == "R1" || p[1] == "R2") && p[2] != myIp)
+                        bool verOk = p.Length >= 3 && (p[1] == "R1" || p[1] == "R2" || p[1] == "R3");
+                        if (verOk && p[2] != myIp)
                         {
                             string ip = p[2];
-                            string pid = "玩家";
-                            try { if (p.Length >= 4) pid = Uri.UnescapeDataString(p[3]); } catch { }
+                             string pid = null;
+                             try { if (p.Length >= 4 && p[3].Length > 0) pid = Uri.UnescapeDataString(p[3]); } catch { }
+                             if (string.IsNullOrEmpty(pid))
+                             {
+                                 lock (peerListLock) { string old; if (peerIds.TryGetValue(p[2], out old)) pid = old; }
+                                 if (string.IsNullOrEmpty(pid)) pid = "玩家";
+                             }
+
+                            // 记录到在线列表
                             lock (peerListLock)
                             {
                                 peerSeen[ip] = DateTime.Now;
@@ -1078,11 +1464,31 @@ if (type == 1 && n > off)    // 对方发了搜索请求 → 对方找房，我�
                                 if (!peerRtt.ContainsKey(ip)) peerRtt[ip] = -1;
                             }
                             RefreshPeerList();
+
+                            // R3 带 IPv6 压缩码 → 自动优先尝试 IPv6
+                            if (p.Length >= 5 && p[4].Length > 0 && !v6.Connected && v6.Peer == null)
+                            {
+                                if (v6.SetPeer(p[4]))
+                                {
+                                    v6.Start();
+                                    Log("[IPv6] 收到 " + ip + " 的公网地址，自动优先试连");
+                                        try
+                                        {
+                                            form.BeginInvoke((Action)delegate
+                                            {
+                                                if (txtPeerCode != null && txtPeerCode.Text.Length == 0)
+                                                    txtPeerCode.Text = p[4];
+                                            });
+                                        }
+                                        catch { }
+                                }
+                            }
+
                             if (!peerLocked || peerIp == null)
                             {
                                 peerIp = ip;
                                 peerLocked = true;
-                                Log("握手完成，锁定对端 " + ip);
+                            LogV("[DEBUG] 收到握手包");
                                 try
                                 {
                                     form.BeginInvoke((Action)delegate
@@ -1106,6 +1512,7 @@ if (type == 1 && n > off)    // 对方发了搜索请求 → 对方找房，我�
             Thread.Sleep(250);
         }
     }
+
 
     static string FindRadminIp()
     {
